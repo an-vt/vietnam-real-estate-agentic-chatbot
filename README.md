@@ -28,8 +28,37 @@ make up
 ```
 
 Every Make command requires `.env` and prints `Missing file .env` if it is absent.
-The file sets the frontend and backend host ports and the frontend's API proxy
-target. Both containers receive the same local environment file.
+The file sets the frontend and backend host ports, the frontend's API proxy
+target, and PostgreSQL connection settings. The PostgreSQL host port defaults
+to 5433, and its data persists in a named Docker volume.
+
+## Import real estate listings
+
+The importer runs on the host. Start PostgreSQL, then install the optional
+Python dependencies and load the CSV once:
+
+```bash
+cd infra/local
+docker compose --env-file .env -f docker-compose.yml up -d postgres
+cd ../../server
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -e '.[ingest]'
+.venv/bin/python -m src.script.ingest_csv \
+  --csv /Users/an/Downloads/VN-real-estate-Apr-Sept-2025.csv
+```
+
+The command uses the database settings in `infra/local/.env` and accepts
+`--batch-size` (default 32) and `--force`. BGE-M3 is downloaded on the first
+run. Each batch commits separately. Rerunning the same command resumes by
+skipping listings with an equal or newer stored scrape time; `--force`
+re-embeds every listing. The table is
+`vietnamese_real_estate.documents`; `price` is in millions of VND, and each
+document has a 1,024-dimensional embedding. Alembic migration `20261005_01`
+creates the extension and table before import; migration `20261005_02` creates
+the HNSW cosine index after the import. The importer applies both migrations
+at the appropriate points. To inspect migration state, run
+`cd server && .venv/bin/alembic current`. The CSV remains on the host and is
+not needed when Compose starts again.
 
 ## Run without Docker
 

@@ -1,0 +1,65 @@
+import csv
+import tempfile
+import unittest
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+
+from src.script.ingest_csv import (
+    embedding_text,
+    latest_listings,
+    needs_import,
+    parse_row,
+    upsert_sql,
+)
+
+
+class IngestCsvTests(unittest.TestCase):
+    def test_latest_scrape_wins_even_when_csv_is_out_of_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "listings.csv"
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["Listing ID", "Scraped At", "Title"])
+                writer.writeheader()
+                writer.writerows([
+                    {"Listing ID": "12.0", "Scraped At": "2025-09-13 00:00:00", "Title": "new"},
+                    {"Listing ID": "12.0", "Scraped At": "2025-09-12 00:00:00", "Title": "old"},
+                    {"Listing ID": "13.0", "Scraped At": "2025-09-13 00:00:00", "Title": "other"},
+                    {"Listing ID": "bad", "Scraped At": "2025-09-13 00:00:00", "Title": "invalid"},
+                ])
+            rows, report = latest_listings(path)
+        self.assertEqual(rows[12]["Title"], "new")
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(report["duplicate_rows"], 1)
+        self.assertEqual(report["invalid_required_rows"], 1)
+
+    def test_invalid_optional_values_become_null_and_are_counted(self):
+        report = Counter()
+        doc = parse_row({
+            "Listing ID": "12.0", "Scraped At": "2025-09-13 00:00:00",
+            "Title": "Bán nhà", "Location": "Hà Nội", "Price": "2500.0",
+            "Area": "nan", "Bedrooms": "2.5", "Latitude": "91", "VIP Account": "maybe",
+        }, report)
+        self.assertEqual(doc["price"], 2500.0)
+        self.assertIsNone(doc["area"])
+        self.assertIsNone(doc["bedrooms"])
+        self.assertIsNone(doc["latitude"])
+        self.assertIsNone(doc["vip_account"])
+        self.assertEqual(sum(report.values()), 4)
+        self.assertIn("Bán nhà", embedding_text(doc))
+        self.assertIn("Hà Nội", embedding_text(doc))
+
+    def test_rerun_skips_equal_or_older_scrapes_unless_forced(self):
+        now = datetime(2025, 9, 13)
+        older = datetime(2025, 9, 12)
+        self.assertFalse(needs_import(now, now, False))
+        self.assertFalse(needs_import(older, now, False))
+        self.assertTrue(needs_import(now, older, False))
+        self.assertTrue(needs_import(now, None, False))
+        self.assertTrue(needs_import(now, now, True))
+        self.assertNotIn("created_at =", upsert_sql(False))
+        self.assertIn("EXCLUDED.scraped_at >", upsert_sql(False))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -9,5 +9,8 @@ description = "FastAPI starter for a Vietnam real estate chatbot"
 requires-python = ">=3.10"
 dependencies = ["fastapi[standard]"]
 
+[project.optional-dependencies]
+ingest = ["alembic>=1.13,<2", "psycopg[binary]>=3.2,<4", "sentence-transformers>=3,<6"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
