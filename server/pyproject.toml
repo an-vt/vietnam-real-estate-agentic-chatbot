@@ -12,11 +12,12 @@ dependencies = [
     "langchain-core>=1,<2",
     "langchain-ollama>=1,<2",
     "langgraph>=1,<2",
+    "psycopg[binary]>=3.2,<4",
     "python-dotenv>=1,<2",
 ]
 
 [project.optional-dependencies]
-ingest = ["alembic>=1.13,<2", "psycopg[binary]>=3.2,<4", "sentence-transformers>=3,<6"]
+ingest = ["alembic>=1.13,<2", "sentence-transformers>=3,<6"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

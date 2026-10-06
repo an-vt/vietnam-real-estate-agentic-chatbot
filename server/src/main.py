@@ -35,27 +35,37 @@ def _event(name: str, data: dict[str, str]) -> str:
 def route_events(question: str) -> Iterator[str]:
     """Translate LangGraph node updates into server-sent events."""
     yield _event("step", {"node": "route", "status": "running"})
+    datasource = None
+    result = None
     try:
-        datasource = None
         for update in get_graph().stream({"question": question}, stream_mode="updates"):
             for node, values in update.items():
-                if node != "route" or not values:
+                if not values:
                     continue
-                datasource = values["datasource"]
-                yield _event(
-                    "step",
-                    {"node": "route", "status": "completed", "datasource": datasource},
-                )
+                if node == "route":
+                    datasource = values["datasource"]
+                    yield _event(
+                        "step",
+                        {"node": "route", "status": "completed", "datasource": datasource},
+                    )
+                    if datasource == "sql":
+                        yield _event("step", {"node": "query_sql", "status": "running"})
+                elif node == "query_sql":
+                    result = values["documents"][0].page_content
+                    yield _event("step", {"node": "query_sql", "status": "completed"})
         if datasource is None:
             raise RuntimeError("The graph did not return a data source")
-        yield _event("done", {"datasource": datasource})
+        if datasource == "sql":
+            if result is None:
+                raise RuntimeError("The SQL node did not return a result")
+            yield _event("done", {"datasource": datasource, "result": result})
+        else:
+            yield _event("done", {"datasource": datasource})
     except Exception:
-        logger.exception("Routing failed")
+        logger.exception("Chat request failed")
         yield _event(
             "error",
-            {
-                "message": "Routing failed. Check that Ollama is running and the model is pulled."
-            },
+            {"message": "Could not complete the request. Please try again."},
         )
 
 

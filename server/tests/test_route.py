@@ -6,11 +6,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from langchain_core.documents import Document
 
 from src.config import load_settings
 from src.graph.build import build_graph
 from src.graph.chains import RouteQuery
 from src.main import app
+from src.tools.sql import SQLQueryError
 
 
 class FakeRouter:
@@ -32,22 +34,27 @@ def parse_events(body: str) -> list[tuple[str, dict[str, str]]]:
 
 
 class RouteTests(unittest.TestCase):
-    def test_graph_compiles_without_ollama_and_stops_after_route(self):
+    def test_graph_runs_sql_branch_and_stops_other_routes(self):
         graph = build_graph()
-        self.assertEqual(set(graph.get_graph().nodes), {"__start__", "route", "__end__"})
+        self.assertEqual(set(graph.get_graph().nodes), {"__start__", "route", "query_sql", "__end__"})
 
         router = FakeRouter("sql")
-        with patch("src.graph.nodes.get_router", return_value=router):
+        document = Document(page_content="count\n2", metadata={"source": "sql"})
+        with patch("src.graph.nodes.get_router", return_value=router), \
+             patch("src.graph.nodes.get_llm", return_value=object()), \
+             patch("src.graph.nodes.run_sql_question", return_value=document) as query:
             updates = list(graph.stream({"question": "How many houses?"}, stream_mode="updates"))
-        self.assertEqual([list(update) for update in updates], [["route"]])
+        self.assertEqual([list(update) for update in updates], [["route"], ["query_sql"]])
         self.assertEqual(updates[0]["route"]["datasource"], "sql")
         self.assertEqual(updates[0]["route"]["original_question"], "How many houses?")
         self.assertEqual(updates[0]["route"]["retries"], 0)
+        self.assertEqual(updates[1]["query_sql"]["documents"], [document])
         self.assertEqual(router.questions, ["How many houses?"])
+        query.assert_called_once()
 
     def test_api_streams_each_route(self):
         client = TestClient(app)
-        for datasource in ("sql", "vectorstore", "web_search"):
+        for datasource in ("vectorstore", "web_search"):
             with self.subTest(datasource=datasource):
                 with patch("src.graph.nodes.get_router", return_value=FakeRouter(datasource)):
                     response = client.post("/api/chat", json={"message": "  A question  "})
@@ -58,6 +65,31 @@ class RouteTests(unittest.TestCase):
                 self.assertEqual(events[0][1], {"node": "route", "status": "running"})
                 self.assertEqual(events[1][1]["datasource"], datasource)
                 self.assertEqual(events[2][1], {"datasource": datasource})
+
+    def test_api_streams_sql_result(self):
+        document = Document(page_content="count\n2", metadata={"source": "sql"})
+        with patch("src.graph.nodes.get_router", return_value=FakeRouter("sql")), \
+             patch("src.graph.nodes.get_llm", return_value=object()), \
+             patch("src.graph.nodes.run_sql_question", return_value=document):
+            response = TestClient(app).post("/api/chat", json={"message": "Count listings"})
+        events = parse_events(response.text)
+        self.assertEqual([name for name, _ in events], ["step", "step", "step", "step", "done"])
+        self.assertEqual(events[2][1], {"node": "query_sql", "status": "running"})
+        self.assertEqual(events[3][1], {"node": "query_sql", "status": "completed"})
+        self.assertEqual(events[4][1], {"datasource": "sql", "result": "count\n2"})
+
+    def test_api_streams_sql_error_without_done(self):
+        with patch("src.graph.nodes.get_router", return_value=FakeRouter("sql")), \
+             patch("src.graph.nodes.get_llm", return_value=object()), \
+             patch("src.graph.nodes.run_sql_question", side_effect=SQLQueryError("bad query")), \
+             patch("src.main.logger.exception"):
+            response = TestClient(app).post("/api/chat", json={"message": "Count listings"})
+        events = parse_events(response.text)
+        self.assertEqual([name for name, _ in events], ["step", "step", "step", "error"])
+        self.assertEqual(
+            events[-1][1]["message"],
+            "Could not complete the request. Please try again.",
+        )
 
     def test_api_streams_error_without_fake_route(self):
         class BrokenRouter:
@@ -70,6 +102,10 @@ class RouteTests(unittest.TestCase):
         events = parse_events(response.text)
         self.assertEqual([name for name, _ in events], ["step", "error"])
         self.assertNotIn("datasource", events[-1][1])
+        self.assertEqual(
+            events[-1][1]["message"],
+            "Could not complete the request. Please try again.",
+        )
 
     def test_blank_message_is_rejected(self):
         response = TestClient(app).post("/api/chat", json={"message": "   "})

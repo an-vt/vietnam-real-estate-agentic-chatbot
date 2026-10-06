@@ -11,6 +11,7 @@ type Message = {
 }
 
 type Datasource = "sql" | "vectorstore" | "web_search"
+type RouteOutcome = { datasource: Datasource; result?: string }
 
 const ROUTE_MESSAGES: Record<Datasource, string> = {
   sql: "SQL — exact filters, counts, or calculations over listing fields.",
@@ -22,13 +23,13 @@ function isDatasource(value: unknown): value is Datasource {
   return value === "sql" || value === "vectorstore" || value === "web_search"
 }
 
-async function readRouteStream(response: Response, onStep: (label: string) => void): Promise<Datasource> {
+async function readRouteStream(response: Response, onStep: (label: string) => void): Promise<RouteOutcome> {
   if (!response.ok || !response.body) throw new Error(`Routing request failed (HTTP ${response.status}).`)
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ""
-  let selected: Datasource | null = null
+  let selected: RouteOutcome | null = null
 
   function handleEvent(raw: string) {
     const lines = raw.split("\n")
@@ -49,9 +50,19 @@ async function readRouteStream(response: Response, onStep: (label: string) => vo
         onStep(`Selected ${values.datasource}`)
       }
     }
+    if (event === "step" && values.node === "query_sql") {
+      if (values.status === "running") onStep("Querying listings…")
+      if (values.status === "completed") onStep("SQL query completed")
+    }
     if (event === "done") {
       if (!isDatasource(values.datasource)) throw new Error("Invalid route from the API.")
-      selected = values.datasource
+      if (values.datasource === "sql" && typeof values.result !== "string") {
+        throw new Error("The API ended without a SQL result.")
+      }
+      selected = {
+        datasource: values.datasource,
+        result: typeof values.result === "string" ? values.result : undefined,
+      }
     }
   }
 
@@ -107,8 +118,10 @@ function App() {
         body: JSON.stringify({ message }),
       })
 
-      const datasource = await readRouteStream(response, setAgentStep)
-      const reply = `Selected route: ${ROUTE_MESSAGES[datasource]}\nSearch and answering will be added in later steps.`
+      const outcome = await readRouteStream(response, setAgentStep)
+      const reply = outcome.datasource === "sql"
+        ? outcome.result!
+        : `Selected route: ${ROUTE_MESSAGES[outcome.datasource]}\nSearch and answering will be added in later steps.`
 
       setMessages((current) => [
         ...current,
@@ -157,7 +170,7 @@ function App() {
             Local prototype
           </div>
           <p className="mt-2 text-xs leading-5 text-muted-foreground">
-            Each question is routed to SQL, vector search, or web search. Retrieval and answers come later.
+            SQL questions return listing results. Vector and web search are route previews for now.
           </p>
         </div>
       </aside>
@@ -197,7 +210,7 @@ function App() {
                     A place to start the conversation.
                   </h2>
                   <p className="mt-5 max-w-[410px] text-sm leading-6 text-muted-foreground">
-                    Ask a question to see which source the agent would use. This step selects a route without searching yet.
+                    Ask for exact listing filters, counts, or calculations to query the database. Other questions show the selected route.
                   </p>
                   <div className="mt-8 flex items-center gap-3 text-xs font-medium text-muted-foreground">
                     <span>Write a message</span>

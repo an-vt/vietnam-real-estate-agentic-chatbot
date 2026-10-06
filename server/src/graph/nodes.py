@@ -2,11 +2,23 @@
 
 import logging
 
-from .chains import get_router
+from ..tools.sql import run_sql_question
+from .chains import get_llm, get_router
 from .state import GraphState
 
-
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------
+# Routing decisions (pure functions over the state)
+# --------------------------------------------------------------------------
+def select_datasource(state: GraphState) -> str:
+    logger.info(
+        "Selecting data source for question: %s is source: %s",
+        state["question"],
+        state["datasource"],
+    )
+    return state["datasource"]
 
 
 def route(state: GraphState) -> GraphState:
@@ -18,3 +30,9 @@ def route(state: GraphState) -> GraphState:
         "original_question": state["question"],
         "retries": 0,
     }
+
+
+def query_sql(state: GraphState) -> GraphState:
+    """Collect SQL evidence for the selected listings question."""
+    document = run_sql_question(state["question"], get_llm())
+    return {"documents": [document]}
