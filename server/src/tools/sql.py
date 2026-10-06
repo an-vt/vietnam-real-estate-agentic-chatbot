@@ -13,7 +13,7 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from ..config import settings
+from ..db import connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -139,20 +139,6 @@ class SQLQueryError(RuntimeError):
     """A SQL question could not be answered safely."""
 
 
-def _connect_read_only():
-    connection = psycopg.connect(
-        host=settings.postgres_host,
-        port=settings.postgres_port,
-        dbname=settings.postgres_db,
-        user=settings.postgres_user,
-        password=settings.postgres_password,
-        connect_timeout=5,
-        options="-c default_transaction_read_only=on -c statement_timeout=5000",
-    )
-    connection.read_only = True
-    return connection
-
-
 def _fold_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value.casefold().replace("đ", "d"))
     ascii_text = "".join(char for char in normalized if not unicodedata.combining(char))
@@ -179,7 +165,7 @@ def _relevant_values(question: str, values: list[str], field: str) -> list[str]:
 def get_value_hints(question: str) -> str:
     """Read actual categorical values without placing user text in SQL."""
     values: dict[str, list[str]] = {}
-    with _connect_read_only() as connection:
+    with connect_db(read_only=True) as connection:
         with connection.cursor() as cursor:
             for field in ("province", "property_type"):
                 cursor.execute(
@@ -212,7 +198,7 @@ def _format_value(value: Any) -> str:
 
 
 def _execute_query(sql: str) -> str:
-    with _connect_read_only() as connection:
+    with connect_db(read_only=True) as connection:
         with connection.cursor() as cursor:
             cursor.execute(sql)
             columns = [column.name for column in cursor.description]

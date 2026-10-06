@@ -2,8 +2,8 @@
 
 This repository has a React chat frontend and a FastAPI backend. LangGraph
 routes each question to `sql`, `vectorstore`, or `web_search`. SQL questions
-run a read-only PostgreSQL query and display the result in chat. Vector and
-web routes are previews; their retrieval steps come later.
+run a read-only PostgreSQL query. Vector questions search the same listings by
+meaning and display relevant matches. The web route is still a preview.
 
 ## Run everything locally with Docker
 
@@ -17,7 +17,7 @@ make up
 Pull the router model into the Ollama container after the first start:
 
 ```bash
-docker compose --env-file .env -f docker-compose.yml exec ollama ollama pull qwen2.5:3b
+docker compose --env-file .env -f docker-compose.yml exec ollama ollama pull qwen2.5:7b
 ```
 
 Open <http://localhost:5173/> for the frontend or <http://localhost:8000/docs>
@@ -40,6 +40,8 @@ PostgreSQL connection settings. The PostgreSQL host port defaults to 5433, and
 its data persists in a named Docker volume. Compose publishes the Docker
 Ollama service on host port 11435 for a backend started from VS Code. No
 macOS Ollama installation is needed.
+With the default local embedding provider, the backend downloads BGE-M3 on its
+first vector search; Docker keeps it in a named cache volume for later runs.
 
 ## Query the listings
 
@@ -47,13 +49,14 @@ The router uses a structured output Ollama call. `sql` means exact listing
 filters, counts, or calculations; `vectorstore` means meaning-based search of
 the same listings; `web_search` means current or outside information. These
 are destinations. The SQL route queries `vietnamese_real_estate.documents`;
-the other routes stop after selection.
+the vector route searches its existing embeddings. The web route stops
+after selection.
 
 `POST /api/chat` accepts `{"message":"How many homes in Hà Nội cost under 3000 million VND?"}`
-and returns a `text/event-stream` response. It emits route `step` events, then
-SQL `step` events for SQL questions. The SQL `done` event contains `datasource`
-and a formatted `result`; other routes return only `datasource`. Failures emit
-an `error` event. Inspect the stream with:
+and returns a `text/event-stream` response. It emits `step` events for the
+selected path. SQL and vector `done` events contain `datasource` and a formatted
+`result`; the web route returns only `datasource`. Failures emit an `error`
+event. Inspect the stream with:
 
 ```bash
 curl -N -H 'Content-Type: application/json' \
@@ -70,6 +73,16 @@ rows are shown. The prompt includes the table DDL, one named example row
 without its embedding values, and exact `province` and `property_type` values
 read from PostgreSQL for the question. The compiled graph is reused across
 requests.
+
+Vector search embeds the question with the same configured model used for import,
+then reads the four nearest listings with pgvector cosine distance. An Ollama
+grader removes irrelevant results. If none remain, a query rewriter can retry
+the search twice. Chat shows the graded listings with key fields and a short
+description, or reports that no relevant listings were found. This branch
+returns listings rather than an LLM-written answer.
+Vector ranking does not apply price filters. The grader sees each listing's
+price, but exact budget constraints should use the SQL route; vector results
+may include listings outside a requested budget.
 
 ### SQL accuracy roadmap
 
@@ -99,9 +112,14 @@ container at `http://ollama:11434`. A backend run on the host uses
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `APP_LOG_LEVEL` | `INFO` | Application logs in the backend container (`DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`); Uvicorn access logs are separate |
-| `LLM_MODEL` | `qwen2.5:3b` | Ollama model used for routing and SQL generation |
+| `LLM_MODEL` | `qwen2.5:7b` | Ollama model used for routing, grading, rewriting, and SQL generation |
 | `OLLAMA_BASE_URL` | `http://localhost:11435` | Docker Ollama address for host runs |
 | `LLM_TEMPERATURE` | `0` | Routing and SQL model temperature |
+| `RETRIEVAL_K` | `4` | Maximum nearest listings read on each vector search |
+| `MAX_RETRIES` | `2` | Maximum query rewrites after grading finds no relevant listing |
+| `EMBEDDING_PROVIDER` | `local` | `local` for Sentence Transformers or `openai` for the OpenAI API |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` for local, `text-embedding-3-small` for OpenAI | Model used by both import and retrieval |
+| `OPENAI_API_KEY` | Unset | Required when `EMBEDDING_PROVIDER=openai`; read by the OpenAI SDK |
 | `KB_DESCRIPTION`, `SQL_DESCRIPTION` | Built-in listing descriptions | Source descriptions in the router prompt |
 | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Local PostgreSQL defaults | Importer, Alembic, and SQL query connection; Compose overrides host and port for the backend |
 
@@ -123,7 +141,7 @@ python3.11 -m venv .venv
 ```
 
 The command uses the database settings in `infra/local/.env` and accepts
-`--batch-size` (default 32) and `--force`. BGE-M3 is downloaded on the first
+`--batch-size` (default 32) and `--force`. Local BGE-M3 is downloaded on the first
 run. Each batch commits separately. Rerunning the same command resumes by
 skipping listings with an equal or newer stored scrape time; `--force`
 re-embeds every listing. The table is
@@ -134,6 +152,15 @@ the HNSW cosine index after the import. The importer applies both migrations
 at the appropriate points. To inspect migration state, run
 `cd server && .venv/bin/alembic current`. The CSV remains on the host and is
 not needed when Compose starts again.
+
+To use OpenAI embeddings in production, give both ingestion and the backend
+`EMBEDDING_PROVIDER=openai` and `OPENAI_API_KEY` (in `infra/local/.env` for
+the local Compose setup). The default
+`text-embedding-3-small` request uses 1,024 dimensions, matching the pgvector
+column. Import the CSV into a fresh database with the selected provider, or
+run the importer with `--force` if the database already has embeddings from
+another model. Ingestion and retrieval must use the same provider and model;
+vectors from different models cannot be mixed in one search index.
 
 ## Debug the Docker backend in VS Code
 
@@ -164,7 +191,7 @@ not enable Uvicorn reload, so breakpoints remain in the request process.
 From the repository root:
 
 1. Start Ollama and PostgreSQL: `docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml up -d ollama postgres`. For an existing `.env`, add `OLLAMA_PORT=11435` and `OLLAMA_BASE_URL=http://localhost:11435`.
-2. Pull the model with `docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml exec ollama ollama pull qwen2.5:3b`.
+2. Pull the model with `docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml exec ollama ollama pull qwen2.5:7b`.
 3. Install the backend into `server/.venv` with `server/.venv/bin/python -m pip install -e ./server`.
 4. If a Compose backend is already running on port 8000, stop only that service with `docker compose --env-file infra/local/.env -f infra/local/docker-compose.yml stop backend`.
 5. In VS Code, select **FastAPI: route**, press F5, and set breakpoints in `server/src/graph/nodes.py` (`route`), `chains.py` (`get_router`), or `server/src/main.py` (`route_events`). Send a question from the frontend or the `curl -N` command above.

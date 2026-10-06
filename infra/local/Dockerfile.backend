@@ -6,7 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY server/ ./
-RUN pip install --no-cache-dir . 'debugpy>=1.8,<2'
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --timeout 120 . 'debugpy>=1.8,<2'
 
 EXPOSE 8000
 

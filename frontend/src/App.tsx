@@ -13,11 +13,7 @@ type Message = {
 type Datasource = "sql" | "vectorstore" | "web_search"
 type RouteOutcome = { datasource: Datasource; result?: string }
 
-const ROUTE_MESSAGES: Record<Datasource, string> = {
-  sql: "SQL — exact filters, counts, or calculations over listing fields.",
-  vectorstore: "Vector search — descriptive search over property listings.",
-  web_search: "Web search — recent facts or information outside the listings database.",
-}
+const WEB_ROUTE_MESSAGE = "Web search — recent facts or information outside the listings database."
 
 function isDatasource(value: unknown): value is Datasource {
   return value === "sql" || value === "vectorstore" || value === "web_search"
@@ -54,10 +50,22 @@ async function readRouteStream(response: Response, onStep: (label: string) => vo
       if (values.status === "running") onStep("Querying listings…")
       if (values.status === "completed") onStep("SQL query completed")
     }
+    if (event === "step" && values.node === "retrieve") {
+      if (values.status === "running") onStep("Searching listings…")
+      if (values.status === "completed") onStep("Listings retrieved")
+    }
+    if (event === "step" && values.node === "grade_documents") {
+      if (values.status === "running") onStep("Checking listing relevance…")
+      if (values.status === "completed") onStep("Listing check completed")
+    }
+    if (event === "step" && values.node === "rewrite_query") {
+      if (values.status === "running") onStep("Improving search query…")
+      if (values.status === "completed") onStep("Searching again…")
+    }
     if (event === "done") {
       if (!isDatasource(values.datasource)) throw new Error("Invalid route from the API.")
-      if (values.datasource === "sql" && typeof values.result !== "string") {
-        throw new Error("The API ended without a SQL result.")
+      if (values.datasource !== "web_search" && typeof values.result !== "string") {
+        throw new Error("The API ended without a result.")
       }
       selected = {
         datasource: values.datasource,
@@ -119,9 +127,9 @@ function App() {
       })
 
       const outcome = await readRouteStream(response, setAgentStep)
-      const reply = outcome.datasource === "sql"
+      const reply = outcome.datasource !== "web_search"
         ? outcome.result!
-        : `Selected route: ${ROUTE_MESSAGES[outcome.datasource]}\nSearch and answering will be added in later steps.`
+        : `Selected route: ${WEB_ROUTE_MESSAGE}\nSearch and answering will be added in later steps.`
 
       setMessages((current) => [
         ...current,
@@ -170,7 +178,7 @@ function App() {
             Local prototype
           </div>
           <p className="mt-2 text-xs leading-5 text-muted-foreground">
-            SQL questions return listing results. Vector and web search are route previews for now.
+            SQL and vector questions return listing results. Web search is a route preview for now.
           </p>
         </div>
       </aside>
@@ -210,7 +218,7 @@ function App() {
                     A place to start the conversation.
                   </h2>
                   <p className="mt-5 max-w-[410px] text-sm leading-6 text-muted-foreground">
-                    Ask for exact listing filters, counts, or calculations to query the database. Other questions show the selected route.
+                    Ask for exact listing filters or describe a property to find matching listings. Current events show the selected route.
                   </p>
                   <div className="mt-8 flex items-center gap-3 text-xs font-medium text-muted-foreground">
                     <span>Write a message</span>

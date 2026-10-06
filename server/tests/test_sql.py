@@ -59,7 +59,7 @@ class SQLTests(unittest.TestCase):
         connection = MagicMock()
         connection.__enter__.return_value = connection
         connection.cursor.return_value.__enter__.return_value = cursor
-        with patch("src.tools.sql.psycopg.connect", return_value=connection):
+        with patch("src.db.psycopg.connect", return_value=connection):
             hints = json.loads(get_value_hints("Đắk Lắk đất"))
         self.assertEqual(hints, {"province": ["dak-lak"], "property_type": ["Đất"]})
         self.assertEqual(cursor.execute.call_count, 2)
@@ -154,7 +154,7 @@ class SQLTests(unittest.TestCase):
         connection = MagicMock()
         connection.__enter__.return_value = connection
         connection.cursor.return_value.__enter__.return_value = cursor
-        with patch("src.tools.sql.psycopg.connect", return_value=connection) as connect:
+        with patch("src.db.psycopg.connect", return_value=connection) as connect:
             result = _execute_query(f"SELECT listing_id, title FROM {TABLE}")
         self.assertIn("House 19", result)
         self.assertNotIn("House 20", result)

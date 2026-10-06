@@ -19,6 +19,10 @@ class Settings:
     llm_model: str
     ollama_base_url: str
     llm_temperature: float
+    retrieval_k: int
+    max_retries: int
+    embedding_provider: str
+    embedding_model: str
     kb_description: str
     sql_description: str
     postgres_host: str
@@ -34,11 +38,21 @@ def load_settings(env_file: Path = LOCAL_ENV) -> Settings:
     app_log_level = os.getenv("APP_LOG_LEVEL", "INFO").upper()
     if app_log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
         raise ValueError(f"Invalid APP_LOG_LEVEL: {app_log_level}")
+    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "local").lower()
+    if embedding_provider not in {"local", "openai"}:
+        raise ValueError(f"Invalid EMBEDDING_PROVIDER: {embedding_provider}")
+    default_embedding_model = (
+        "BAAI/bge-m3" if embedding_provider == "local" else "text-embedding-3-small"
+    )
     return Settings(
         app_log_level=app_log_level,
-        llm_model=os.getenv("LLM_MODEL", "qwen2.5:3b"),
+        llm_model=os.getenv("LLM_MODEL", "qwen2.5:7b"),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11435"),
         llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
+        retrieval_k=int(os.getenv("RETRIEVAL_K", "4")),
+        max_retries=int(os.getenv("MAX_RETRIES", "2")),
+        embedding_provider=embedding_provider,
+        embedding_model=os.getenv("EMBEDDING_MODEL", default_embedding_model),
         kb_description=os.getenv(
             "KB_DESCRIPTION",
             "Vietnamese real estate listings in PostgreSQL with titles, locations, "

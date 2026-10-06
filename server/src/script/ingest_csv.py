@@ -1,4 +1,4 @@
-"""Import the latest scrape of each listing into PostgreSQL with BGE-M3 vectors."""
+"""Import the latest scrape of each listing into PostgreSQL with embeddings."""
 
 from __future__ import annotations
 
@@ -11,11 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..config import settings
+from ..db import connect_db
+from ..embeddings import DIMENSIONS, get_embedder
 
 
-MODEL_NAME = "BAAI/bge-m3"
-DIMENSIONS = 1024
 TABLE = "vietnamese_real_estate.documents"
 COLUMNS = (
     "listing_id", "title", "price", "area", "location", "property_type",
@@ -178,29 +177,11 @@ def upsert_sql(force: bool) -> str:
             f"ON CONFLICT (listing_id) DO UPDATE SET {updates} WHERE {condition}")
 
 
-def make_encoder() -> Any:
-    from sentence_transformers import SentenceTransformer
-
-    model = SentenceTransformer(MODEL_NAME)
-    model.max_seq_length = 512
-    if str(model.device).startswith("mps"):
-        model.half()
-    return model
-
-
 def import_csv(path: Path, batch_size: int, force: bool) -> Counter[str]:
-    import psycopg
-
     migrate("20261005_01")
     latest, report = latest_listings(path)
-    connection = psycopg.connect(
-        host=settings.postgres_host,
-        port=settings.postgres_port,
-        dbname=settings.postgres_db,
-        user=settings.postgres_user,
-        password=settings.postgres_password,
-    )
-    encoder = None
+    connection = connect_db(read_only=False)
+    embedder = None
     try:
         sql = upsert_sql(force)
         for raw_batch in batches(sorted(latest.values(), key=approximate_text_length), batch_size):
@@ -214,17 +195,20 @@ def import_csv(path: Path, batch_size: int, force: bool) -> Counter[str]:
             if not pending:
                 continue
             docs = [parse_row(row, report) for row in pending]
-            if encoder is None:
-                encoder = make_encoder()
-            vectors = encoder.encode(
-                [embedding_text(doc) for doc in docs],
-                batch_size=batch_size,
-                normalize_embeddings=True,
-                convert_to_numpy=True,
-                show_progress_bar=False,
+            docs_with_text = [(doc, embedding_text(doc)) for doc in docs]
+            report["skipped_empty_embedding_text"] += sum(
+                not text.strip() for _, text in docs_with_text
             )
+            docs_with_text = [(doc, text) for doc, text in docs_with_text if text.strip()]
+            if not docs_with_text:
+                continue
+            if embedder is None:
+                embedder = get_embedder()
+            vectors = embedder.embed_documents([text for _, text in docs_with_text])
+            if len(vectors) != len(docs_with_text):
+                raise ValueError("Embedding provider returned the wrong number of vectors")
             values = []
-            for doc, vector in zip(docs, vectors):
+            for (doc, _), vector in zip(docs_with_text, vectors):
                 if len(vector) != DIMENSIONS:
                     raise ValueError(f"Expected {DIMENSIONS} embedding dimensions, got {len(vector)}")
                 doc["embedding"] = "[" + ",".join(str(float(value)) for value in vector) + "]"
