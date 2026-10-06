@@ -6,11 +6,12 @@ import argparse
 import csv
 import json
 import math
-import os
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
+
+from ..config import settings
 
 
 MODEL_NAME = "BAAI/bge-m3"
@@ -23,16 +24,6 @@ COLUMNS = (
     "longitude", "vip_account", "agent_role", "agent_name",
     "agent_listing_count", "province", "scraped_at", "embedding",
 )
-
-
-def local_env() -> None:
-    """Use Compose's local settings on the host, without overriding exported values."""
-    path = Path(__file__).resolve().parents[3] / "infra/local/.env"
-    if path.exists():
-        for line in path.read_text().splitlines():
-            if line and not line.lstrip().startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key.strip(), value.strip().strip('"\''))
 
 
 def parse_timestamp(value: str) -> datetime | None:
@@ -200,15 +191,14 @@ def make_encoder() -> Any:
 def import_csv(path: Path, batch_size: int, force: bool) -> Counter[str]:
     import psycopg
 
-    local_env()
     migrate("20261005_01")
     latest, report = latest_listings(path)
     connection = psycopg.connect(
-        host=os.getenv("POSTGRES_HOST", "127.0.0.1"),
-        port=int(os.getenv("POSTGRES_PORT", "5433")),
-        dbname=os.getenv("POSTGRES_DB", "vietnam_real_estate"),
-        user=os.getenv("POSTGRES_USER", "postgres"),
-        password=os.getenv("POSTGRES_PASSWORD", "postgres"),
+        host=settings.postgres_host,
+        port=settings.postgres_port,
+        dbname=settings.postgres_db,
+        user=settings.postgres_user,
+        password=settings.postgres_password,
     )
     encoder = None
     try:

@@ -1,5 +1,19 @@
-from fastapi import FastAPI
+import json
+import logging
+from collections.abc import Iterator
+from functools import lru_cache
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+from .config import settings
+from .graph.build import build_graph
+from .logger import setup_logging
+
+setup_logging(settings.app_log_level)
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -8,8 +22,41 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
 
 
-class ChatResponse(BaseModel):
-    reply: str
+@lru_cache(maxsize=1)
+def get_graph():
+    """Compile once, like the cached graph in the reference app."""
+    return build_graph()
+
+
+def _event(name: str, data: dict[str, str]) -> str:
+    return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def route_events(question: str) -> Iterator[str]:
+    """Translate LangGraph node updates into server-sent events."""
+    yield _event("step", {"node": "route", "status": "running"})
+    try:
+        datasource = None
+        for update in get_graph().stream({"question": question}, stream_mode="updates"):
+            for node, values in update.items():
+                if node != "route" or not values:
+                    continue
+                datasource = values["datasource"]
+                yield _event(
+                    "step",
+                    {"node": "route", "status": "completed", "datasource": datasource},
+                )
+        if datasource is None:
+            raise RuntimeError("The graph did not return a data source")
+        yield _event("done", {"datasource": datasource})
+    except Exception:
+        logger.exception("Routing failed")
+        yield _event(
+            "error",
+            {
+                "message": "Routing failed. Check that Ollama is running and the model is pulled."
+            },
+        )
 
 
 @app.get("/")
@@ -17,7 +64,13 @@ def root() -> dict[str, str]:
     return {"message": "Hello World"}
 
 
-@app.post("/api/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest) -> ChatResponse:
-    print(f"Chat message received: {payload.message}", flush=True)
-    return ChatResponse(reply="Message received")
+@app.post("/api/chat")
+def chat(payload: ChatRequest) -> StreamingResponse:
+    question = payload.message.strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="message must not be blank")
+    return StreamingResponse(
+        route_events(question),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

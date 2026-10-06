@@ -10,10 +10,73 @@ type Message = {
   content: string
 }
 
+type Datasource = "sql" | "vectorstore" | "web_search"
+
+const ROUTE_MESSAGES: Record<Datasource, string> = {
+  sql: "SQL — exact filters, counts, or calculations over listing fields.",
+  vectorstore: "Vector search — descriptive search over property listings.",
+  web_search: "Web search — recent facts or information outside the listings database.",
+}
+
+function isDatasource(value: unknown): value is Datasource {
+  return value === "sql" || value === "vectorstore" || value === "web_search"
+}
+
+async function readRouteStream(response: Response, onStep: (label: string) => void): Promise<Datasource> {
+  if (!response.ok || !response.body) throw new Error(`Routing request failed (HTTP ${response.status}).`)
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let selected: Datasource | null = null
+
+  function handleEvent(raw: string) {
+    const lines = raw.split("\n")
+    const event = lines.find((line) => line.startsWith("event: "))?.slice(7)
+    const dataText = lines.filter((line) => line.startsWith("data: ")).map((line) => line.slice(6)).join("\n")
+    if (!event || !dataText) return
+
+    const data: unknown = JSON.parse(dataText)
+    if (typeof data !== "object" || data === null) throw new Error("Invalid routing event.")
+    const values = data as Record<string, unknown>
+
+    if (event === "error") {
+      throw new Error(typeof values.message === "string" ? values.message : "Routing failed.")
+    }
+    if (event === "step" && values.node === "route") {
+      if (values.status === "running") onStep("Routing the question…")
+      if (values.status === "completed" && isDatasource(values.datasource)) {
+        onStep(`Selected ${values.datasource}`)
+      }
+    }
+    if (event === "done") {
+      if (!isDatasource(values.datasource)) throw new Error("Invalid route from the API.")
+      selected = values.datasource
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n")
+    let boundary = buffer.indexOf("\n\n")
+    while (boundary !== -1) {
+      handleEvent(buffer.slice(0, boundary))
+      buffer = buffer.slice(boundary + 2)
+      boundary = buffer.indexOf("\n\n")
+    }
+  }
+  buffer += decoder.decode()
+  if (buffer.trim()) handleEvent(buffer.trim())
+  if (!selected) throw new Error("The API ended without a route.")
+  return selected
+}
+
 function App() {
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<Message[]>([])
   const [isSending, setIsSending] = useState(false)
+  const [agentStep, setAgentStep] = useState("Routing the question…")
   const [error, setError] = useState<string | null>(null)
   const nextMessageId = useRef(0)
   const messagesEnd = useRef<HTMLDivElement>(null)
@@ -35,6 +98,7 @@ function App() {
     setInput("")
     setError(null)
     setIsSending(true)
+    setAgentStep("Routing the question…")
 
     try {
       const response = await fetch("/api/chat", {
@@ -43,18 +107,15 @@ function App() {
         body: JSON.stringify({ message }),
       })
 
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-
-      const data: { reply?: unknown } = await response.json()
-      if (typeof data.reply !== "string") throw new Error("Invalid response")
-      const reply = data.reply
+      const datasource = await readRouteStream(response, setAgentStep)
+      const reply = `Selected route: ${ROUTE_MESSAGES[datasource]}\nSearch and answering will be added in later steps.`
 
       setMessages((current) => [
         ...current,
         { id: nextMessageId.current++, role: "assistant", content: reply },
       ])
-    } catch {
-      setError("Could not reach the API. Check that both services are running, then try again.")
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not complete routing. Please try again.")
     } finally {
       setIsSending(false)
     }
@@ -96,7 +157,7 @@ function App() {
             Local prototype
           </div>
           <p className="mt-2 text-xs leading-5 text-muted-foreground">
-            Messages go to FastAPI and appear in the backend container logs. Replies are placeholders for now.
+            Each question is routed to SQL, vector search, or web search. Retrieval and answers come later.
           </p>
         </div>
       </aside>
@@ -136,12 +197,12 @@ function App() {
                     A place to start the conversation.
                   </h2>
                   <p className="mt-5 max-w-[410px] text-sm leading-6 text-muted-foreground">
-                    Send a message to test the local chat connection. The API will log it and send back a confirmation.
+                    Ask a question to see which source the agent would use. This step selects a route without searching yet.
                   </p>
                   <div className="mt-8 flex items-center gap-3 text-xs font-medium text-muted-foreground">
                     <span>Write a message</span>
                     <span aria-hidden="true" className="h-px w-5 bg-border" />
-                    <span>See it in the API logs</span>
+                    <span>See the selected route</span>
                   </div>
                 </div>
               ) : (
@@ -172,7 +233,7 @@ function App() {
                       <div className="flex size-9 items-center justify-center rounded-xl bg-[#e7eee6] text-primary">
                         <House aria-hidden="true" size={18} strokeWidth={1.8} />
                       </div>
-                      <span>Waiting for the API…</span>
+                      <span>{agentStep}</span>
                     </div>
                   )}
                   <div ref={messagesEnd} />
@@ -199,7 +260,7 @@ function App() {
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Type a message to test the chat…"
+                placeholder="Ask about a property or a recent fact…"
                 className="min-h-[82px] resize-none border-0 bg-transparent px-2 py-2 text-[14px] shadow-none focus-visible:border-0 focus-visible:ring-0"
               />
               <div className="flex items-end justify-between gap-3 px-1 pb-1">

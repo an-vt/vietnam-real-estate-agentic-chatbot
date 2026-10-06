@@ -10,4 +10,4 @@ down: check-env
 	docker compose --env-file .env -f docker-compose.yml down
 
 logs: check-env
-	docker compose --env-file .env -f docker-compose.yml logs -f
+	docker compose --env-file .env -f docker-compose.yml logs -f backend
