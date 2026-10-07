@@ -46,6 +46,10 @@ class LoggingSetupTests(unittest.TestCase):
             node_logger.warning("shown at WARNING")
 
         self.assertIn("INFO src.graph.nodes: shown at INFO", output.getvalue())
+        self.assertRegex(
+            output.getvalue(),
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z INFO src\.graph\.nodes",
+        )
         self.assertNotIn("hidden at WARNING", output.getvalue())
         self.assertIn("WARNING src.graph.nodes: shown at WARNING", output.getvalue())
 

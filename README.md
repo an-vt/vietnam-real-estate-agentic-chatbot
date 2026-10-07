@@ -3,7 +3,8 @@
 This repository has a React chat frontend and a FastAPI backend. LangGraph
 routes each question to `sql`, `vectorstore`, or `web_search`. SQL questions
 run a read-only PostgreSQL query. Vector questions search the same listings by
-meaning and display relevant matches. The web route is still a preview.
+meaning and display relevant matches. Web questions search current public pages
+and return an answer with source links.
 
 ## Run everything locally with Docker
 
@@ -43,19 +44,25 @@ macOS Ollama installation is needed.
 With the default local embedding provider, the backend downloads BGE-M3 on its
 first vector search; Docker keeps it in a named cache volume for later runs.
 
+To use OpenRouter instead, set `LLM_PROVIDER=openrouter`, set `LLM_MODEL` to an
+OpenRouter model slug such as `qwen/qwen3.5-27b`, and provide `LLM_API_KEY`. The
+Ollama service can remain running but is not used for
+LLM calls.
+
 ## Query the listings
 
 The router uses a structured output Ollama call. `sql` means exact listing
 filters, counts, or calculations; `vectorstore` means meaning-based search of
-the same listings; `web_search` means current or outside information. These
-are destinations. The SQL route queries `vietnamese_real_estate.documents`;
-the vector route searches its existing embeddings. The web route stops
-after selection.
+the same listings; `web_search` means current or outside information, including
+the latest public property ads. The SQL route queries
+`vietnamese_real_estate.documents`; the vector route searches its existing
+embeddings. The Ollama router makes every source decision. The web route searches
+with DDGS and reads up to two result pages.
 
 `POST /api/chat` accepts `{"message":"How many homes in Hà Nội cost under 3000 million VND?"}`
 and returns a `text/event-stream` response. It emits `step` events for the
-selected path. SQL and vector `done` events contain `datasource` and a formatted
-`result`; the web route returns only `datasource`. Failures emit an `error`
+selected path. All `done` events contain `datasource` and `result`; web events
+also contain `sources` with titles and URLs. Failures emit an `error`
 event. Inspect the stream with:
 
 ```bash
@@ -83,6 +90,19 @@ returns listings rather than an LLM-written answer.
 Vector ranking does not apply price filters. The grader sees each listing's
 price, but exact budget constraints should use the SQL route; vector results
 may include listings outside a requested budget.
+
+For a current public listing request, the web route extracts individual ads
+from pages it could read, checks that key fields appear on the same page, and
+filters explicit price, area, bedroom, location, and property type requirements.
+It excludes category pages and listings without a verifiable asking price or
+posting date. When no match is verified, it rewrites the query up to
+`MAX_RETRIES` times and then says it could not verify a match. General web
+questions use the retrieved text or search snippets to compose a cited answer.
+Routing and all web retries share a 60-second deadline; an unfinished request
+ends with a timeout error. Web model calls have bounded output, DDGS returns at
+most five results, and each read page contributes at most 2,000 characters.
+Application logs use UTC timestamps and include elapsed time for each web stage.
+Live DDGS tests need internet access and may fail when the service is unavailable.
 
 ### SQL accuracy roadmap
 
@@ -112,14 +132,14 @@ container at `http://ollama:11434`. A backend run on the host uses
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `APP_LOG_LEVEL` | `INFO` | Application logs in the backend container (`DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`); Uvicorn access logs are separate |
-| `LLM_MODEL` | `qwen2.5:7b` | Ollama model used for routing, grading, rewriting, and SQL generation |
+| `LLM_PROVIDER` | `local` | `local` for Ollama, `openai` for OpenAI, or `openrouter` for OpenRouter |
+| `LLM_MODEL` | `qwen2.5:7b` | Provider model used for routing, grading, rewriting, and SQL generation |
+| `LLM_API_KEY` | Unset | Required when `LLM_PROVIDER` is `openai` or `openrouter`; used by both chat and embeddings |
 | `OLLAMA_BASE_URL` | `http://localhost:11435` | Docker Ollama address for host runs |
 | `LLM_TEMPERATURE` | `0` | Routing and SQL model temperature |
 | `RETRIEVAL_K` | `4` | Maximum nearest listings read on each vector search |
 | `MAX_RETRIES` | `2` | Maximum query rewrites after grading finds no relevant listing |
-| `EMBEDDING_PROVIDER` | `local` | `local` for Sentence Transformers or `openai` for the OpenAI API |
-| `EMBEDDING_MODEL` | `BAAI/bge-m3` for local, `text-embedding-3-small` for OpenAI | Model used by both import and retrieval |
-| `OPENAI_API_KEY` | Unset | Required when `EMBEDDING_PROVIDER=openai`; read by the OpenAI SDK |
+| `LLM_EMBEDDING_MODEL` | `BAAI/bge-m3` for `local`, `text-embedding-3-small` otherwise | Model used by both import and retrieval |
 | `KB_DESCRIPTION`, `SQL_DESCRIPTION` | Built-in listing descriptions | Source descriptions in the router prompt |
 | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Local PostgreSQL defaults | Importer, Alembic, and SQL query connection; Compose overrides host and port for the backend |
 
@@ -153,9 +173,10 @@ at the appropriate points. To inspect migration state, run
 `cd server && .venv/bin/alembic current`. The CSV remains on the host and is
 not needed when Compose starts again.
 
-To use OpenAI embeddings in production, give both ingestion and the backend
-`EMBEDDING_PROVIDER=openai` and `OPENAI_API_KEY` (in `infra/local/.env` for
-the local Compose setup). The default
+Embeddings use the same `LLM_PROVIDER` as chat. To use OpenAI embeddings in
+production, set `LLM_PROVIDER=openai` and `LLM_API_KEY` (in `infra/local/.env`
+for the local Compose setup). To use OpenRouter's OpenAI-compatible embeddings,
+set `LLM_PROVIDER=openrouter` and `LLM_API_KEY`. The default
 `text-embedding-3-small` request uses 1,024 dimensions, matching the pgvector
 column. Import the CSV into a fresh database with the selected provider, or
 run the importer with `--force` if the database already has embeddings from

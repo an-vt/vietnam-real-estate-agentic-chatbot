@@ -12,14 +12,49 @@ class EmbeddingTests(unittest.TestCase):
         get_embedder.cache_clear()
 
     def test_factory_uses_configured_provider_and_model(self):
-        for provider, class_name in (("local", "LocalEmbedder"), ("openai", "OpenAIEmbedder")):
+        for provider, class_name, expected_kwargs in (
+            ("local", "LocalEmbedder", {}),
+            ("openai", "OpenAIEmbedder", {"api_key": "openai-key"}),
+            (
+                "openrouter",
+                "OpenAIEmbedder",
+                {"api_key": "router-key", "base_url": "https://openrouter.ai/api/v1"},
+            ),
+        ):
             with self.subTest(provider=provider):
                 get_embedder.cache_clear()
-                settings = SimpleNamespace(embedding_provider=provider, embedding_model="chosen-model")
-                with patch("src.embeddings.settings", settings), \
-                     patch(f"src.embeddings.{class_name}") as constructor:
+                settings = SimpleNamespace(
+                    llm_provider=provider,
+                    llm_embedding_model="chosen-model",
+                    llm_api_key="openai-key" if provider == "openai" else "router-key",
+                )
+                with patch("src.embeddings.settings", settings), patch(
+                    f"src.embeddings.{class_name}"
+                ) as constructor:
                     self.assertIs(get_embedder(), constructor.return_value)
-                    constructor.assert_called_once_with("chosen-model")
+                    constructor.assert_called_once_with(
+                        "chosen-model", **expected_kwargs
+                    )
+
+    def test_factory_rejects_unknown_provider(self):
+        settings = SimpleNamespace(
+            llm_provider="unknown",
+            llm_embedding_model="chosen-model",
+            llm_api_key=None,
+        )
+        with patch("src.embeddings.settings", settings):
+            with self.assertRaisesRegex(ValueError, "Invalid LLM_PROVIDER"):
+                get_embedder()
+
+    def test_openrouter_requires_api_key(self):
+        settings = SimpleNamespace(
+            llm_provider="openrouter",
+            llm_embedding_model="chosen-model",
+            llm_api_key=None,
+        )
+        with patch("src.embeddings.settings", settings):
+            with self.assertRaisesRegex(ValueError, "LLM_API_KEY"):
+                get_embedder()
 
     def test_openai_requests_1024_dimensions_and_preserves_input_order(self):
         client = MagicMock()
@@ -40,6 +75,18 @@ class EmbeddingTests(unittest.TestCase):
         )
         self.assertEqual(embedder.embed_documents([]), [])
         client.embeddings.create.assert_called_once()
+
+    def test_openrouter_embedder_configures_openrouter_client(self):
+        with patch("openai.OpenAI") as constructor:
+            OpenAIEmbedder(
+                "embedding-model",
+                api_key="router-key",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        constructor.assert_called_once_with(
+            api_key="router-key",
+            base_url="https://openrouter.ai/api/v1",
+        )
 
 
 if __name__ == "__main__":

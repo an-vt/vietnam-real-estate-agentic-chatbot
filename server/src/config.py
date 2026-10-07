@@ -8,7 +8,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_ENV = PROJECT_ROOT / "infra/local/.env"
 
@@ -16,13 +15,14 @@ LOCAL_ENV = PROJECT_ROOT / "infra/local/.env"
 @dataclass(frozen=True)
 class Settings:
     app_log_level: str
+    llm_provider: str
     llm_model: str
+    llm_api_key: str | None
     ollama_base_url: str
     llm_temperature: float
     retrieval_k: int
     max_retries: int
-    embedding_provider: str
-    embedding_model: str
+    llm_embedding_model: str
     kb_description: str
     sql_description: str
     postgres_host: str
@@ -38,21 +38,22 @@ def load_settings(env_file: Path = LOCAL_ENV) -> Settings:
     app_log_level = os.getenv("APP_LOG_LEVEL", "INFO").upper()
     if app_log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
         raise ValueError(f"Invalid APP_LOG_LEVEL: {app_log_level}")
-    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "local").lower()
-    if embedding_provider not in {"local", "openai"}:
-        raise ValueError(f"Invalid EMBEDDING_PROVIDER: {embedding_provider}")
+    llm_provider = os.getenv("LLM_PROVIDER", "local").lower()
+    if llm_provider not in {"local", "openai", "openrouter"}:
+        raise ValueError(f"Invalid LLM_PROVIDER: {llm_provider}")
     default_embedding_model = (
-        "BAAI/bge-m3" if embedding_provider == "local" else "text-embedding-3-small"
+        "BAAI/bge-m3" if llm_provider == "local" else "text-embedding-3-small"
     )
     return Settings(
         app_log_level=app_log_level,
+        llm_provider=llm_provider,
         llm_model=os.getenv("LLM_MODEL", "qwen2.5:7b"),
-        ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11435"),
+        llm_embedding_model=os.getenv("LLM_EMBEDDING_MODEL", default_embedding_model),
+        llm_api_key=os.getenv("LLM_API_KEY"),
         llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
+        ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11435"),
         retrieval_k=int(os.getenv("RETRIEVAL_K", "4")),
         max_retries=int(os.getenv("MAX_RETRIES", "2")),
-        embedding_provider=embedding_provider,
-        embedding_model=os.getenv("EMBEDDING_MODEL", default_embedding_model),
         kb_description=os.getenv(
             "KB_DESCRIPTION",
             "Vietnamese real estate listings in PostgreSQL with titles, locations, "
@@ -75,3 +76,28 @@ def load_settings(env_file: Path = LOCAL_ENV) -> Settings:
 
 
 settings = load_settings()
+
+
+@dataclass(frozen=True)
+class OpenAIClientConfig:
+    api_key: str | None
+    base_url: str | None = None
+
+
+def get_openai_client_config(
+    provider: str,
+    config: Settings,
+) -> OpenAIClientConfig:
+    """Return shared configuration for OpenAI-compatible clients."""
+    if provider == "openai":
+        if not config.llm_api_key:
+            raise ValueError("LLM_API_KEY is required for provider=openai")
+        return OpenAIClientConfig(api_key=config.llm_api_key)
+    if provider == "openrouter":
+        if not config.llm_api_key:
+            raise ValueError("LLM_API_KEY is required for provider=openrouter")
+        return OpenAIClientConfig(
+            api_key=config.llm_api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+    raise ValueError(f"Invalid provider: {provider}")
