@@ -6,9 +6,13 @@ import re
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
+
+try:
+    from langchain_ollama import ChatOllama
+except ImportError:  # The local provider is an optional production dependency.
+    ChatOllama = None  # type: ignore[assignment,misc]
 
 from ..config import get_openai_client_config, settings
 from .state import Datasource, WebListingBatch, WebRequest
@@ -66,6 +70,8 @@ def _get_chat_openai(num_predict: int | None) -> ChatOpenAI:
 @lru_cache(maxsize=5)
 def get_llm(num_predict: int | None = None) -> BaseChatModel:
     if settings.llm_provider == "local":
+        if ChatOllama is None:
+            raise RuntimeError("Install the local dependency set to use LLM_PROVIDER=local")
         return ChatOllama(
             model=settings.llm_model,
             base_url=settings.ollama_base_url,

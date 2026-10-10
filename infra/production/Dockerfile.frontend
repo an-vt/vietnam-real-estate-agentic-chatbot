@@ -1,0 +1,33 @@
+# Builder stage: install Node tooling and compile the Vite application.
+FROM node:24-alpine AS build
+
+# Keep frontend build files isolated from the final artifact image.
+WORKDIR /app
+
+# Copy lockfiles first so npm can reuse the dependency layer when source changes.
+COPY frontend/package.json frontend/package-lock.json ./
+# Install the exact locked dependency tree required by the build.
+RUN npm ci
+
+# Copy source only after dependencies to preserve Docker build cache reuse.
+COPY frontend/ ./
+# Generate static production assets in frontend/dist.
+RUN npm run build
+
+# Runtime artifact stage: no Node.js, npm, or source dependencies are shipped.
+FROM alpine:3.22
+
+# Copy only the compiled static assets from the Node builder stage.
+COPY --from=build /app/dist /app/dist
+
+# Prepare a writable shared-volume target owned by the non-root artifact user.
+RUN addgroup -S app \
+    && adduser -S -G app app \
+    && mkdir -p /dist \
+    && chown -R app:app /app /dist
+
+# Do not run the artifact-copy container as root.
+USER app
+
+# Copy the artifact into the shared volume consumed by the separate Nginx service.
+CMD ["sh", "-c", "rm -rf /dist/* && cp -a /app/dist/. /dist/"]

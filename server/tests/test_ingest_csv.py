@@ -6,7 +6,9 @@ from datetime import datetime
 from pathlib import Path
 
 from src.script.ingest_csv import (
+    MAX_EMBEDDING_INPUT_TOKENS,
     embedding_text,
+    embedding_batches,
     latest_listings,
     needs_import,
     parse_row,
@@ -15,6 +17,13 @@ from src.script.ingest_csv import (
 
 
 class IngestCsvTests(unittest.TestCase):
+    class FakeEncoder:
+        def encode(self, text):
+            return list(text)
+
+        def decode(self, tokens):
+            return "".join(tokens)
+
     def test_latest_scrape_wins_even_when_csv_is_out_of_order(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "listings.csv"
@@ -48,6 +57,17 @@ class IngestCsvTests(unittest.TestCase):
         self.assertEqual(sum(report.values()), 4)
         self.assertIn("Bán nhà", embedding_text(doc))
         self.assertIn("Hà Nội", embedding_text(doc))
+        self.assertIn("Giá: 2500.0 triệu VND", embedding_text(doc))
+
+    def test_embedding_batches_respect_item_and_token_limits(self):
+        items = [
+            ({"listing_id": 1}, "a" * 5),
+            ({"listing_id": 2}, "b" * (MAX_EMBEDDING_INPUT_TOKENS + 10)),
+            ({"listing_id": 3}, "c" * 5),
+        ]
+        grouped = list(embedding_batches(items, 2, encoder=self.FakeEncoder()))
+        self.assertEqual([len(batch) for batch in grouped], [2, 1])
+        self.assertEqual(len(grouped[0][1][1]), MAX_EMBEDDING_INPUT_TOKENS)
 
     def test_rerun_skips_equal_or_older_scrapes_unless_forced(self):
         now = datetime(2025, 9, 13)

@@ -7,7 +7,7 @@ WORKDIR /app
 
 COPY server/ ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --timeout 120 . 'debugpy>=1.8,<2'
+    pip install --timeout 120 '.[local,ingest]' 'debugpy>=1.8,<2'
 
 EXPOSE 8000
 

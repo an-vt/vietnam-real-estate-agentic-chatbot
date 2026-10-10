@@ -49,7 +49,7 @@ def load_settings(env_file: Path = LOCAL_ENV) -> Settings:
         llm_provider=llm_provider,
         llm_model=os.getenv("LLM_MODEL", "qwen2.5:7b"),
         llm_embedding_model=os.getenv("LLM_EMBEDDING_MODEL", default_embedding_model),
-        llm_api_key=os.getenv("LLM_API_KEY"),
+        llm_api_key=_secret_value("LLM_API_KEY"),
         llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11435"),
         retrieval_k=int(os.getenv("RETRIEVAL_K", "4")),
@@ -71,8 +71,19 @@ def load_settings(env_file: Path = LOCAL_ENV) -> Settings:
         postgres_port=int(os.getenv("POSTGRES_PORT", "5433")),
         postgres_db=os.getenv("POSTGRES_DB", "vietnam_real_estate"),
         postgres_user=os.getenv("POSTGRES_USER", "postgres"),
-        postgres_password=os.getenv("POSTGRES_PASSWORD", "postgres"),
+        postgres_password=_secret_value("POSTGRES_PASSWORD", "postgres"),
     )
+
+
+def _secret_value(name: str, default: str | None = None) -> str | None:
+    """Read a normal environment variable or a Docker-style *_FILE value."""
+    value = os.getenv(name)
+    if value is not None:
+        return value
+    secret_file = os.getenv(f"{name}_FILE")
+    if secret_file:
+        return Path(secret_file).read_text(encoding="utf-8").strip()
+    return default
 
 
 settings = load_settings()

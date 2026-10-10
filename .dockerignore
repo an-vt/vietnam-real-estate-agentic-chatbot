@@ -4,4 +4,5 @@
 **/*.egg-info
 **/node_modules
 frontend/dist
-infra/local/.env
+**/.env
+**/secrets

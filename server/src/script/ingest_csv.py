@@ -16,6 +16,9 @@ from ..embeddings import DIMENSIONS, get_embedder
 
 
 TABLE = "vietnamese_real_estate.documents"
+MAX_EMBEDDING_INPUTS = 2048
+MAX_EMBEDDING_INPUT_TOKENS = 8192
+MAX_EMBEDDING_BATCH_TOKENS = 300_000
 COLUMNS = (
     "listing_id", "title", "price", "area", "location", "property_type",
     "width", "length", "bedrooms", "bathrooms", "floors", "position",
@@ -129,18 +132,24 @@ def parse_row(row: dict[str, str], report: Counter[str]) -> dict[str, Any]:
 
 
 def embedding_text(document: dict[str, Any]) -> str:
+    fields = (
+        ("Tiêu đề", "title", ""),
+        ("Giá", "price", " triệu VND"),
+        ("Loại bất động sản", "property_type", ""),
+        ("Địa điểm", "location", ""),
+        ("Mô tả", "description", ""),
+    )
     return "\n".join(
-        f"{label}: {document[key]}" for label, key in (
-            ("Tiêu đề", "title"), ("Loại bất động sản", "property_type"),
-            ("Địa điểm", "location"), ("Mô tả", "description"),
-        ) if document[key]
+        f"{label}: {document[key]}{suffix}"
+        for label, key, suffix in fields
+        if document[key] is not None and document[key] != ""
     )
 
 
 def approximate_text_length(row: dict[str, str]) -> int:
     """Group similarly sized inputs to reduce padding during batch encoding."""
     return sum(len(row.get(field) or "") for field in
-               ("Title", "Property Type", "Location", "Description"))
+               ("Title", "Price", "Property Type", "Location", "Description"))
 
 
 def needs_import(scraped_at: datetime, stored_at: datetime | None, force: bool) -> bool:
@@ -154,6 +163,39 @@ def batches(items: Iterable[Any], size: int) -> Iterable[list[Any]]:
         if len(batch) == size:
             yield batch
             batch = []
+    if batch:
+        yield batch
+
+
+def embedding_batches(
+    items: list[tuple[dict[str, Any], str]],
+    size: int,
+    *,
+    encoder: Any | None = None,
+) -> Iterable[list[tuple[dict[str, Any], str]]]:
+    """Yield embedding inputs within OpenAI's item and token limits."""
+    if encoder is None:
+        import tiktoken
+
+        encoder = tiktoken.get_encoding("cl100k_base")
+    size = min(size, MAX_EMBEDDING_INPUTS)
+    batch: list[tuple[dict[str, Any], str]] = []
+    token_count = 0
+    for document, text in items:
+        tokens = encoder.encode(text)
+        if len(tokens) > MAX_EMBEDDING_INPUT_TOKENS:
+            text = encoder.decode(tokens[:MAX_EMBEDDING_INPUT_TOKENS])
+            tokens = tokens[:MAX_EMBEDDING_INPUT_TOKENS]
+        item_tokens = len(tokens)
+        if batch and (
+            len(batch) >= size
+            or token_count + item_tokens > MAX_EMBEDDING_BATCH_TOKENS
+        ):
+            yield batch
+            batch = []
+            token_count = 0
+        batch.append((document, text))
+        token_count += item_tokens
     if batch:
         yield batch
 
@@ -204,19 +246,20 @@ def import_csv(path: Path, batch_size: int, force: bool) -> Counter[str]:
                 continue
             if embedder is None:
                 embedder = get_embedder()
-            vectors = embedder.embed_documents([text for _, text in docs_with_text])
-            if len(vectors) != len(docs_with_text):
-                raise ValueError("Embedding provider returned the wrong number of vectors")
-            values = []
-            for (doc, _), vector in zip(docs_with_text, vectors):
-                if len(vector) != DIMENSIONS:
-                    raise ValueError(f"Expected {DIMENSIONS} embedding dimensions, got {len(vector)}")
-                doc["embedding"] = "[" + ",".join(str(float(value)) for value in vector) + "]"
-                values.append(tuple(doc[name] for name in COLUMNS))
-            with connection.cursor() as cursor:
-                cursor.executemany(sql, values)
-            connection.commit()
-            report["upserted"] += len(values)
+            for embedding_batch in embedding_batches(docs_with_text, batch_size):
+                vectors = embedder.embed_documents([text for _, text in embedding_batch])
+                if len(vectors) != len(embedding_batch):
+                    raise ValueError("Embedding provider returned the wrong number of vectors")
+                values = []
+                for (doc, _), vector in zip(embedding_batch, vectors):
+                    if len(vector) != DIMENSIONS:
+                        raise ValueError(f"Expected {DIMENSIONS} embedding dimensions, got {len(vector)}")
+                    doc["embedding"] = "[" + ",".join(str(float(value)) for value in vector) + "]"
+                    values.append(tuple(doc[name] for name in COLUMNS))
+                with connection.cursor() as cursor:
+                    cursor.executemany(sql, values)
+                connection.commit()
+                report["upserted"] += len(values)
             if report["upserted"] % (batch_size * 100) == 0:
                 print(json.dumps(dict(report), ensure_ascii=False), flush=True)
     finally:
@@ -228,11 +271,11 @@ def import_csv(path: Path, batch_size: int, force: bool) -> Counter[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", required=True, type=Path, help="Path to CSV on the host")
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--force", action="store_true", help="Re-embed and upsert all listings")
     args = parser.parse_args()
-    if args.batch_size < 1:
-        parser.error("--batch-size must be positive")
+    if not 1 <= args.batch_size <= MAX_EMBEDDING_INPUTS:
+        parser.error(f"--batch-size must be between 1 and {MAX_EMBEDDING_INPUTS}")
     report = import_csv(args.csv, args.batch_size, args.force)
     print(json.dumps(dict(report), ensure_ascii=False, indent=2), flush=True)
 

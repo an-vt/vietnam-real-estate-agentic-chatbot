@@ -425,6 +425,26 @@ class RouteTests(unittest.TestCase):
                 settings = load_settings(path)
                 self.assertEqual(settings.llm_embedding_model, "BAAI/bge-m3")
 
+    def test_config_reads_docker_secret_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            secret_dir = Path(directory)
+            api_key_file = secret_dir / "llm_api_key"
+            password_file = secret_dir / "postgres_password"
+            api_key_file.write_text("api-key-from-file\n")
+            password_file.write_text("password-from-file\n")
+            with patch.dict(
+                os.environ,
+                {
+                    "LLM_PROVIDER": "openai",
+                    "LLM_API_KEY_FILE": str(api_key_file),
+                    "POSTGRES_PASSWORD_FILE": str(password_file),
+                },
+                clear=True,
+            ):
+                settings = load_settings(secret_dir / ".env")
+            self.assertEqual(settings.llm_api_key, "api-key-from-file")
+            self.assertEqual(settings.postgres_password, "password-from-file")
+
 
 if __name__ == "__main__":
     unittest.main()

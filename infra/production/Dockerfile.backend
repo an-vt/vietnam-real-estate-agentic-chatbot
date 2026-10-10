@@ -1,0 +1,55 @@
+# Builder stage: compile/install Python dependencies outside the runtime image.
+FROM python:3.11-slim AS builder
+
+# Keep Python logs unbuffered and prevent bytecode/cache noise during the build.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Use a dedicated build directory so only selected artifacts reach production.
+WORKDIR /build
+
+# Copy dependency metadata and the files required by package installation/migrations.
+COPY server/pyproject.toml server/alembic.ini ./
+COPY server/src ./src
+COPY server/alembic ./alembic
+
+# Install production plus ingestion dependencies into an isolated virtualenv.
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --no-compile '.[ingest]'
+
+# Runtime stage: ship the Python runtime, virtualenv, application, and migrations only.
+FROM python:3.11-slim AS runtime
+
+# Make the builder-created virtualenv the only Python environment used at runtime.
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Keep application files in a stable working directory for Uvicorn and Alembic.
+WORKDIR /app
+
+# Copy only the installed dependencies and runtime application artifacts.
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /build/src ./src
+COPY --from=builder /build/alembic ./alembic
+COPY --from=builder /build/alembic.ini ./alembic.ini
+
+# Run the API as an unprivileged user and give it ownership of its working tree.
+RUN addgroup --system app \
+    && adduser --system --ingroup app app \
+    && chown -R app:app /app
+
+# Drop root privileges for the application process.
+USER app
+
+# Document the internal API port used by Nginx.
+EXPOSE 8000
+
+# Let Compose detect an unhealthy API without adding curl to the image.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"
+
+# Start Uvicorn in production mode without reload/debug tooling.
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
