@@ -2,6 +2,10 @@
 
 An AI chatbot for exploring Vietnamese property listings through natural language. It combines semantic search, text-to-SQL, and web search in one agentic workflow, with a React chat interface and a FastAPI backend.
 
+## Demo
+
+![Vietnamese real estate chatbot answering a recent apartment price question with web search sources](Xnip2026-10-20_17-39-32.jpg)
+
 ## What it does
 
 The LangGraph agent routes each question to the data source that best fits:
