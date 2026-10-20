@@ -88,3 +88,13 @@ The default local embedding model is downloaded on first use. When using OpenAI,
 - “Search the web for current apartment listings in District 7.”
 
 The chat API is `POST /api/chat` and streams progress and the final answer using server-sent events.
+
+## SQL accuracy roadmap
+
+The current text-to-SQL path gives the model the listings table schema, an example row, and live categorical values. Planned improvements are to:
+
+1. Build a small metadata catalog from PostgreSQL with table details, categorical values, and curated question-to-SQL examples.
+2. Retrieve the metadata relevant to each question before generating SQL.
+3. Validate generated queries with PostgreSQL `EXPLAIN`, use validation errors to guide corrections, and evaluate accuracy against verified listing questions.
+
+This is a planned PostgreSQL enhancement inspired by [AWS's conversational data assistant pattern](https://aws.amazon.com/blogs/machine-learning/build-a-conversational-data-assistant-part-1-text-to-sql-with-amazon-bedrock-agents/); it does not require AWS Glue, DynamoDB, or Redshift.
