@@ -42,6 +42,30 @@ class IngestCsvTests(unittest.TestCase):
         self.assertEqual(report["duplicate_rows"], 1)
         self.assertEqual(report["invalid_required_rows"], 1)
 
+    def test_max_records_stops_after_raw_csv_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "listings.csv"
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["Listing ID", "Scraped At", "Title"])
+                writer.writeheader()
+                writer.writerows([
+                    {"Listing ID": "12.0", "Scraped At": "2025-09-12 00:00:00", "Title": "old"},
+                    {"Listing ID": "12.0", "Scraped At": "2025-09-13 00:00:00", "Title": "new"},
+                    {"Listing ID": "13.0", "Scraped At": "2025-09-13 00:00:00", "Title": "not read"},
+                ])
+            rows, report = latest_listings(path, max_records=2)
+        self.assertEqual(report["csv_rows"], 2)
+        self.assertEqual(report["duplicate_rows"], 1)
+        self.assertEqual(set(rows), {12})
+        self.assertEqual(rows[12]["Title"], "new")
+
+    def test_max_records_must_be_positive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "listings.csv"
+            path.write_text("Listing ID,Scraped At,Title\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                latest_listings(path, max_records=0)
+
     def test_invalid_optional_values_become_null_and_are_counted(self):
         report = Counter()
         doc = parse_row({

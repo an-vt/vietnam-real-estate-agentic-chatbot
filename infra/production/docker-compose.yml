@@ -2,9 +2,7 @@ name: vietnam-real-estate-chatbot-production
 
 services:
   backend:
-    build:
-      context: ../..
-      dockerfile: infra/production/Dockerfile.backend
+    image: ${BACKEND_IMAGE}
     env_file: .env
     environment:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
@@ -37,9 +35,10 @@ services:
         max-file: "3"
 
   frontend:
-    build:
-      context: ../..
-      dockerfile: infra/production/Dockerfile.frontend
+    image: ${FRONTEND_IMAGE}
+    # Named volumes are mounted root-owned by Docker; this short-lived
+    # artifact copier needs root only to populate the shared static volume.
+    user: "0:0"
     command: ["sh", "-c", "rm -rf /dist/* && cp -a /app/dist/. /dist/"]
     volumes:
       - frontend_dist:/dist
@@ -57,14 +56,17 @@ services:
     volumes:
       - frontend_dist:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./secrets/origin/origin.crt:/etc/nginx/tls/origin.crt:ro
+      - ./secrets/origin/origin.key:/etc/nginx/tls/origin.key:ro
     networks:
       - vietnam-real-estate-chatbot-net
     ports:
       - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
     restart: unless-stopped
     init: true
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O /dev/null https://127.0.0.1/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

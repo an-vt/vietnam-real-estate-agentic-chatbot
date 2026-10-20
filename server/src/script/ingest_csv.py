@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import math
+import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -45,7 +46,13 @@ def parse_id(value: str) -> int | None:
     return None
 
 
-def latest_listings(path: Path) -> tuple[dict[int, dict[str, str]], Counter[str]]:
+def latest_listings(
+    path: Path,
+    *,
+    max_records: int | None = None,
+) -> tuple[dict[int, dict[str, str]], Counter[str]]:
+    if max_records is not None and max_records < 1:
+        raise ValueError("max_records must be at least 1")
     latest: dict[int, dict[str, str]] = {}
     report: Counter[str] = Counter()
     with path.open(encoding="utf-8-sig", newline="") as handle:
@@ -54,6 +61,8 @@ def latest_listings(path: Path) -> tuple[dict[int, dict[str, str]], Counter[str]
         if not required.issubset(reader.fieldnames or []):
             raise ValueError(f"CSV is missing columns: {sorted(required - set(reader.fieldnames or []))}")
         for row in reader:
+            if max_records is not None and report["csv_rows"] >= max_records:
+                break
             report["csv_rows"] += 1
             listing_id = parse_id(row.get("Listing ID", ""))
             scraped_at = parse_timestamp(row.get("Scraped At", ""))
@@ -219,14 +228,24 @@ def upsert_sql(force: bool) -> str:
             f"ON CONFLICT (listing_id) DO UPDATE SET {updates} WHERE {condition}")
 
 
-def import_csv(path: Path, batch_size: int, force: bool) -> Counter[str]:
+def import_csv(
+    path: Path,
+    batch_size: int,
+    force: bool,
+    max_records: int | None = None,
+) -> Counter[str]:
     migrate("20261005_01")
-    latest, report = latest_listings(path)
+    latest, report = latest_listings(path, max_records=max_records)
+    print(json.dumps({"status": "selected", **dict(report)}, ensure_ascii=False), flush=True)
     connection = connect_db(read_only=False)
     embedder = None
+    started_at = time.monotonic()
     try:
         sql = upsert_sql(force)
-        for raw_batch in batches(sorted(latest.values(), key=approximate_text_length), batch_size):
+        for batch_number, raw_batch in enumerate(
+            batches(sorted(latest.values(), key=approximate_text_length), batch_size),
+            start=1,
+        ):
             ids = [parse_id(row["Listing ID"]) for row in raw_batch]
             with connection.cursor() as cursor:
                 cursor.execute(f"SELECT listing_id, scraped_at FROM {TABLE} WHERE listing_id = ANY(%s)", (ids,))
@@ -260,8 +279,15 @@ def import_csv(path: Path, batch_size: int, force: bool) -> Counter[str]:
                     cursor.executemany(sql, values)
                 connection.commit()
                 report["upserted"] += len(values)
-            if report["upserted"] % (batch_size * 100) == 0:
-                print(json.dumps(dict(report), ensure_ascii=False), flush=True)
+            print(json.dumps({
+                "status": "progress",
+                "batch": batch_number,
+                "batch_records": len(raw_batch),
+                "upserted": report["upserted"],
+                "skipped_current": report["skipped_current"],
+                "skipped_empty_embedding_text": report["skipped_empty_embedding_text"],
+                "elapsed_seconds": round(time.monotonic() - started_at, 1),
+            }, ensure_ascii=False), flush=True)
     finally:
         connection.close()
     migrate("head")
@@ -272,11 +298,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", required=True, type=Path, help="Path to CSV on the host")
     parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument(
+        "--max-records",
+        type=int,
+        default=None,
+        help="Read at most this many physical CSV data rows; omitted means all rows",
+    )
     parser.add_argument("--force", action="store_true", help="Re-embed and upsert all listings")
     args = parser.parse_args()
     if not 1 <= args.batch_size <= MAX_EMBEDDING_INPUTS:
         parser.error(f"--batch-size must be between 1 and {MAX_EMBEDDING_INPUTS}")
-    report = import_csv(args.csv, args.batch_size, args.force)
+    if args.max_records is not None and args.max_records < 1:
+        parser.error("--max-records must be at least 1")
+    report = import_csv(args.csv, args.batch_size, args.force, args.max_records)
     print(json.dumps(dict(report), ensure_ascii=False, indent=2), flush=True)
 
 

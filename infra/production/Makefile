@@ -3,6 +3,7 @@
 COMPOSE = docker compose --env-file .env -f docker-compose.yml
 CSV_PATH ?= $(shell sed -n 's/^CSV_PATH=//p' .env)
 INGEST_BATCH_SIZE ?= $(or $(shell sed -n 's/^INGEST_BATCH_SIZE=//p' .env),512)
+INGEST_LIMIT_FLAGS = $(if $(MAX_RECORDS),--max-records $(MAX_RECORDS),)
 
 ifdef FORCE
 INGEST_FLAGS = --force
@@ -23,8 +24,8 @@ config:
 	@$(COMPOSE) config --quiet
 
 up: check
-	$(COMPOSE) up --build -d
-	$(COMPOSE) run --rm backend alembic upgrade head
+	$(COMPOSE) pull
+	$(COMPOSE) up -d --force-recreate
 
 down: check-env
 	$(COMPOSE) down
@@ -45,4 +46,5 @@ ingest: check
 		python -m src.script.ingest_csv \
 		--csv /data/input.csv \
 		--batch-size $(INGEST_BATCH_SIZE) \
+		$(INGEST_LIMIT_FLAGS) \
 		$(INGEST_FLAGS)
