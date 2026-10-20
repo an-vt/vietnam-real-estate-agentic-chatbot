@@ -29,26 +29,23 @@ services:
       context: ../..
       dockerfile: infra/local/Dockerfile.backend
     command:
-      - python
-      - -Xfrozen_modules=off
-      - -m
-      - debugpy
-      - --listen
-      - 0.0.0.0:5678
-      - -m
-      - uvicorn
-      - src.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
+      - /bin/sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        exec python -Xfrozen_modules=off -m debugpy
+        --listen 0.0.0.0:5678 -m uvicorn src.main:app
+        --host 0.0.0.0 --port 8000
     env_file: .env
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
     depends_on:
-      - ollama
+      ollama:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     ports:
       - "${BACKEND_PORT:-8000}:8000"
       - "127.0.0.1:5678:5678"

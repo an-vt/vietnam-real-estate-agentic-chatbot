@@ -61,6 +61,7 @@ docker compose --env-file .env -f docker-compose.yml exec ollama ollama pull qwe
 ```
 
 Open the app at <http://localhost:5173/>. The backend API docs are at <http://localhost:8000/docs>.
+On startup, the local Compose stack waits for PostgreSQL and applies all pending Alembic migrations before starting the backend.
 
 ### 3. Load the listing data
 
